@@ -9,7 +9,15 @@
   :root{
     --bg:#EDF0F4; --card:#FFF; --ink:#1B2733; --muted:#5C6B7A; --line:#D7DEE6;
     --blue:#3454D1; --green:#1E8A5A; --green-bg:#E7F5EE; --red:#C0392B; --red-bg:#FBEAE7;
+    --soft:#F3F6FA; --warn-bg:#FFF6E5; --warn-line:#EAD9AE;
   }
+  html[data-theme="dark"]{
+    --bg:#14181D; --card:#1D242C; --ink:#E8EAED; --muted:#96A3B1; --line:#333E4A;
+    --blue:#7A93FF; --green:#3DC48F; --green-bg:#173528; --red:#EF7466; --red-bg:#3B221F;
+    --soft:#242D37; --warn-bg:#332B18; --warn-line:#5A4C28;
+  }
+  html[data-theme="dark"] .btn{background:#3E5BE0; color:#fff}
+  html{color-scheme:light dark}
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
   body{margin:0; background:var(--bg); color:var(--ink);
     font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
@@ -29,12 +37,12 @@
   .opt{display:block; width:100%; text-align:left; margin:10px 0; padding:14px;
     border:1.5px solid var(--line); border-radius:12px; background:var(--card);
     color:var(--ink); font-size:15.5px; line-height:1.4; cursor:pointer}
-  .opt:active{background:#F3F6FA}
+  .opt:active{background:var(--soft)}
   .opt.correct{border-color:var(--green); background:var(--green-bg)}
   .opt.wrong{border-color:var(--red); background:var(--red-bg)}
   .opt:disabled{cursor:default} .opt.dim:disabled{opacity:.55}
   #explain{margin-top:16px; padding:14px; border-radius:12px; font-size:14.5px;
-    background:#F3F6FA; border:1px solid var(--line); display:none}
+    background:var(--soft); border:1px solid var(--line); display:none}
   .verdict{font-weight:700; margin-bottom:6px}
   .verdict.ok{color:var(--green)} .verdict.no{color:var(--red)}
   .btn{display:block; width:100%; margin-top:14px; padding:15px; border:0;
@@ -59,43 +67,66 @@
   .wl{margin:8px 0 0; padding-left:18px; font-size:14px}
   .wl li{margin:4px 0} .wl b{font-family:Georgia,serif}
   small.note{color:var(--muted); display:block; margin-top:8px}
-  .warn{background:#FFF6E5; border:1px solid #EAD9AE; border-radius:10px; padding:10px 12px; font-size:13.5px; margin-top:12px}
+  .warn{background:var(--warn-bg); border:1px solid var(--warn-line); border-radius:10px; padding:10px 12px; font-size:13.5px; margin-top:12px}
+  #theme{border:1px solid var(--line); background:var(--card); color:var(--ink);
+    border-radius:8px; padding:4px 10px; font-size:15px; cursor:pointer; line-height:1.3}
+  .hright{display:flex; align-items:center; gap:10px}
 </style>
 </head>
 <body>
 <header>
   <span class="brand">GRE Vocab Drill</span>
-  <span id="score"></span>
+  <span class="hright"><span id="score"></span><button id="theme" title="Toggle dark mode">◐</button></span>
 </header>
 <main id="main"><div class="center"><div class="spin"></div>Loading words from your sheet…</div></main>
 
 <script>
+/* ---------- theme: follows system, manual toggle remembered ---------- */
+(function(){
+  let saved = null; try{ saved = localStorage.getItem("gre_theme"); }catch(e){}
+  const sysDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  document.documentElement.dataset.theme = saved || (sysDark ? "dark" : "light");
+})();
+document.getElementById("theme").onclick = ()=>{
+  const t = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = t;
+  try{ localStorage.setItem("gre_theme", t); }catch(e){}
+};
+
 const SHEET_ID = "1aRTgPCr9kKnef0zyigvw7-SDVLD4x_8SW6MgCN675o8";
 const TABS = ["Sheet1","Sheet2","Sheet3","Sheet5","Meet's additions"];
 /* Paste your Apps Script Web App URL (ends in /exec) between the quotes: */
-const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzQXfVc1KuJnuCs4iBFHBKESZoSbP6HGoAwRQeizWLMOD1fXohBIzt44j-kUVq0NbSFjg/exec";
+const SCRIPT_URL = "";
 const $ = id => document.getElementById(id);
 let WORDS = [], deck = [], ptr = 0, cur = null, S = null;
-let tabCounts = {}, blankCount = 0, failedTabs = [];
+let tabCounts = {}, blankCount = 0, failedTabs = [], dupeCount = 0;
 
 /* ---------- load all tabs directly from Google ---------- */
 async function loadSheet(){
   $("main").innerHTML = '<div class="center"><div class="spin"></div>Loading words from your sheet…</div>';
-  WORDS = []; failedTabs = []; tabCounts = {}; blankCount = 0;
-  const seen = new Set();
+  WORDS = []; failedTabs = []; tabCounts = {}; blankCount = 0; dupeCount = 0;
+  const results = {};
   await Promise.all(TABS.map(async tab=>{
     try{
       const r = await fetch(csvURL(tab));
       if(!r.ok) throw 0;
-      let n = 0;
-      for(const p of extractPairs(parseCSV(await r.text()))){
-        if(p.blank){ blankCount++; continue; }
-        const k = p.w.toLowerCase();
-        if(!seen.has(k)){ seen.add(k); WORDS.push(p); n++; }
-      }
-      tabCounts[tab] = n;
+      results[tab] = extractPairs(parseCSV(await r.text()));
     }catch(e){ failedTabs.push(tab); }
   }));
+  // Merge in fixed TABS order so counts are stable and earlier tabs win duplicates
+  const seen = new Set();
+  for(const tab of TABS){
+    if(!(tab in results)) continue;
+    let raw = 0, uniq = 0;
+    for(const p of results[tab]){
+      if(p.blank){ blankCount++; continue; }
+      raw++;
+      const k = p.w.toLowerCase();
+      if(seen.has(k)){ dupeCount++; continue; }
+      seen.add(k); WORDS.push(p); uniq++;
+    }
+    tabCounts[tab] = {raw, uniq};
+  }
   if(WORDS.length < 8){
     $("main").innerHTML = '<div class="center">⚠️ Couldn\'t load the sheet.<br>'+
       '<small class="note">Check the sheet is shared as “Anyone with the link — Viewer” and you\'re online. '+
@@ -140,12 +171,15 @@ function nextWord(){ if(ptr>=deck.length){ deck=shuffle(WORDS.map((_,i)=>i)); pt
 /* ---------- screens ---------- */
 function home(){
   S = null; $("score").textContent = "";
-  const tabs = Object.entries(tabCounts).map(([t,n])=>
-    '<div class="stat"><span>'+t+'</span><b>'+n+' words</b></div>').join("");
+  const tabs = TABS.filter(t=>tabCounts[t]).map(t=>{
+    const c = tabCounts[t];
+    return '<div class="stat"><span>'+t+'</span><b>'+c.raw+' found · '+c.uniq+' new</b></div>';
+  }).join("");
   $("main").innerHTML =
     '<div class="card"><div class="label">Word pool</div>'+
-    '<div id="word" style="font-size:30px">'+WORDS.length+' words</div><div class="rule"></div>'+
+    '<div id="word" style="font-size:30px">'+WORDS.length+' unique words</div><div class="rule"></div>'+
     tabs+
+    '<div class="stat"><span>Duplicates across tabs</span><b>'+dupeCount+'</b></div>'+
     '<div class="stat"><span>Skipped (no meaning yet)</span><b>'+blankCount+'</b></div>'+
     (failedTabs.length?'<div class="warn">Couldn\'t load tab(s): <b>'+failedTabs.join(", ")+
       '</b> — check the exact tab name spelling in the TABS list.</div>':"")+
