@@ -166,7 +166,12 @@ function extractPairs(rows){
 
 /* ---------- deck: shuffle all, deal through, reshuffle (equal exposure) ---------- */
 function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
-function nextWord(){ if(ptr>=deck.length){ deck=shuffle(WORDS.map((_,i)=>i)); ptr=0; } return WORDS[deck[ptr++]]; }
+let reviewPool = null; // array of word objects when in review mode, else null
+function nextWord(){
+  const src = reviewPool || WORDS;
+  if(ptr>=deck.length){ deck=shuffle(src.map((_,i)=>i)); ptr=0; }
+  return src[deck[ptr++]];
+}
 
 /* ---------- screens ---------- */
 function home(){
@@ -186,19 +191,62 @@ function home(){
     (!SCRIPT_URL?'<div class="warn">Cloud analytics not set up yet — sessions won\'t be saved. '+
       'Paste your Apps Script URL into SCRIPT_URL in this file.</div>':"")+
     '<button class="btn" onclick="startQuiz()">Start quiz</button>'+
+    '<button class="btn ghost" onclick="startReview()">🔁 Review my wrong words</button>'+
     '<button class="btn ghost" onclick="analytics()">📊 Analytics</button>'+
     '<button class="btn ghost" onclick="loadSheet()">↻ Sync sheet</button></div>';
 }
 function startQuiz(){
+  reviewPool = null;
   S = { ts: Date.now(), answered: 0, right: 0, wrong: [] };
   deck = shuffle(WORDS.map((_,i)=>i)); ptr = 0;
+  renderQuizShell("What does this word mean?");
+  ask();
+}
+
+/* ---------- review mode: quiz only words previously gotten wrong ---------- */
+async function fetchWrongWords(){
+  const wrong = new Map(); // key: lowercase word -> {w, m}
+  try{
+    const r = await fetch(csvURL("Sessions"));
+    if(r.ok){
+      for(const row of parseCSV(await r.text())){
+        let list = []; try{ list = JSON.parse(row[5]||"[]"); }catch(e){}
+        for(const x of list){
+          if(x && x.w) wrong.set(x.w.toLowerCase(), {w:x.w, m:x.m});
+        }
+      }
+    }
+  }catch(e){}
+  // Prefer the current sheet's meaning if the word still exists there (keeps it fresh)
+  const byWord = new Map(WORDS.map(o=>[o.w.toLowerCase(), o]));
+  const out = [];
+  for(const [k,v] of wrong){ out.push(byWord.get(k) || v); }
+  return out;
+}
+async function startReview(){
+  $("main").innerHTML = '<div class="center"><div class="spin"></div>Gathering your wrong words…</div>';
+  const words = await fetchWrongWords();
+  if(words.length < 1){
+    $("main").innerHTML = '<div class="card"><div class="label">Nothing to review</div>'+
+      '<div id="word" style="font-size:26px">No wrong words yet</div><div class="rule"></div>'+
+      '<small class="note">Finish some quizzes first — any word you miss gets collected here automatically.</small>'+
+      '<button class="btn ghost" onclick="home()">← Home</button></div>';
+    return;
+  }
+  reviewPool = shuffle(words);
+  S = { ts: Date.now(), answered: 0, right: 0, wrong: [], review: true };
+  deck = shuffle(reviewPool.map((_,i)=>i)); ptr = 0;
+  renderQuizShell("Review · "+reviewPool.length+" word"+(reviewPool.length==1?"":"s")+" you missed");
+  ask();
+}
+
+function renderQuizShell(label){
   $("main").innerHTML =
-    '<div class="card"><div class="label">What does this word mean?</div>'+
+    '<div class="card"><div class="label">'+label+'</div>'+
     '<div id="word"></div><div class="rule"></div><div id="opts"></div>'+
     '<div id="explain"></div><button class="btn" id="next" style="display:none">Next word →</button></div>'+
     '<button class="btn danger" onclick="endQuiz()">■ End quiz &amp; save session</button>';
   $("next").onclick = ask;
-  ask();
 }
 function ask(){
   const q = nextWord();
